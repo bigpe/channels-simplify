@@ -28,6 +28,12 @@ class ResponsePayload:
     """List of response payload signatures"""
 
     @dataclass
+    class ChannelLayerDisabled(BasePayload):
+        #: Error message
+        message: str = 'Channel layer disabled, modify your settings, is requirement for broadcast correct work ' \
+                       'see more about it https://channels.readthedocs.io/en/stable/topics/channel_layers.html'
+
+    @dataclass
     class ActionNotExist(BasePayload):
         message: str = 'Action not exist'  #: Error message
 
@@ -83,7 +89,7 @@ class Action:
     def __str__(self, to_json=True):
         data = ActionData(
             type=self.event,
-            payload=self.payload,
+            payload=self.payload.to_data() if isinstance(self.payload, BasePayload) else self.payload,
             system=self.system
         ).to_data()
         if to_json:
@@ -96,7 +102,7 @@ class Action:
     def to_data(self, to_json=False, pop_system=False):
         data = {
             'event': self.event,
-            'payload': self.payload,
+            'payload': self.payload.to_data() if isinstance(self.payload, BasePayload) else self.payload,
             'system': self.system.to_data() if isinstance(self.system, ActionSystem) else self.system
         }
         if pop_system:
@@ -204,7 +210,8 @@ def for_user(message: Message):
     return False
 
 
-class TargetResolver:
-    TargetsEnum.for_initiator = for_initiator
-    TargetsEnum.for_all = for_all
-    TargetsEnum.for_user = for_user
+TargetResolver = {
+    TargetsEnum.for_initiator: for_initiator,
+    TargetsEnum.for_all: for_all,
+    TargetsEnum.for_user: for_user
+}
