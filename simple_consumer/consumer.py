@@ -9,13 +9,14 @@ from typing import Callable
 
 from asgiref.sync import async_to_sync
 from channels.consumer import get_handler_name
+from channels.db import database_sync_to_async
 from channels.generic.websocket import JsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
 from .decoratos import auth, safe
-from .signatures import ResponsePayload, BasePayload, ActionsEnum, Action, TargetsEnum, Message, ActionSystem, \
+from .signatures import ResponsePayload, BasePayload, Action, TargetsEnum, Message, ActionSystem, \
     MessageSystem, TargetResolver
 from .utils import camel_to_snake, user_cache_key, camel_to_dot
 
@@ -31,65 +32,71 @@ class SimpleEvent:
     consumer = None  #: Consumer object instance
     hidden = False  #: If hidden, event can't be called from client side
 
-    def __init__(self, event=None, payload: BasePayload = BasePayload()):
-        self.consumer: SimpleConsumer
+    def __init__(self, event=None, consumer=None, payload: BasePayload = None, trigger=True):
+        self.consumer: SimpleConsumer = consumer if consumer else self.consumer
+        if not self.consumer:
+            print('Provide consumer instance for direct call event')
+            return
 
+        payload = payload if payload else BasePayload()
+        self.event = self.parse_event(event, payload)
+
+        if trigger:
+            # If event marked as Hidden, send action not exist
+            if self.hidden:
+                self.consumer.Error(payload=ResponsePayload.ActionNotExist())
+                return
+
+            # Send broadcast
+            self.consumer.send_broadcast(
+                event,
+                action_for_target=self.action_for_target,
+                action_for_initiator=self.action_for_initiator,
+                target=self.target,
+                before_send=self.before_send,
+                payload_type=self.request_payload_type
+            )
+
+    def __call__(self, payload: [dict, BasePayload]) -> Action:
+        if isinstance(payload, BasePayload):
+            payload = payload.to_data()
+        event = self.event
+        return Action(event=event.pop('type'), system=event.pop('system'), payload=payload)
+
+    def parse_event(self, event: dict, payload: BasePayload):
         event_name = camel_to_dot(self.__class__.__name__)
 
         # If event data not provided, it means event instance was called directly, you can provide payload
-        # to imitate client side communicate, event type (name) and system data obtained automatically
+        # and consumer instance to imitate client side communicate,
+        # event type (name) and system data obtained automatically
         if not event:
             self.hidden = False
             event = {
                 'type': event_name,
-                'payload': payload.to_data(),
+                'payload': payload.to_data() if isinstance(payload, BasePayload) else payload,
                 'system': self.consumer.get_systems().to_data()
             }
-
-        self.event = event
-
-        # If event marked as Hidden, send action not exist
-        if self.hidden:
-            action = Action(
-                event=ActionsEnum.error,
-                payload=ResponsePayload.ActionNotExist().to_data(),
-                system=ActionSystem()
-            )
-            self.consumer.send_json(content=action.to_data())
-            return
-
-        # Send broadcast
-        self.consumer.send_broadcast(
-            event,
-            action_for_target=self.action_for_target,
-            action_for_initiator=self.action_for_initiator,
-            target=self.target,
-            before_send=self.before_send,
-            payload_type=self.request_payload_type
-        )
-
-    """
-    Do something before event well be sent to initiator or target users
-    Use if you need mutate DB data before users receive event
-    """
+        return event
 
     def before_send(self, message: Message, payload: request_payload_type):
+        """
+        Do something once before event well be sent to initiator or target users
+        Use if you need mutate DB data before users receive event
+        """
         ...
-
-    """
-    Do something for user who send this event from client side
-    Returned Action well be fired and sent
-    """
 
     def action_for_initiator(self, message: Message, payload: request_payload_type) -> [Action, None]:
+        """
+        Do something for user who send this event from client side
+        Returned Action well be fired and sent
+        """
         ...
 
-    """
-    Do something for user who access to receive this event
-    Returned Action well be fired and sent
-    """
-
     def action_for_target(self, message: Message, payload: request_payload_type) -> [Action, None]:
+        """
+        Do something for user who access to receive this event
+        Returned Action well be fired and sent
+        """
         ...
 
 
@@ -100,7 +107,7 @@ class SimpleConsumer(JsonWebsocketConsumer):
 
     def __init__(self):
         super(SimpleConsumer, self).__init__()
-        self.inject_consumer_to_events()
+        self.hide_events()
 
     @auth
     def connect(self):
@@ -151,6 +158,14 @@ class SimpleConsumer(JsonWebsocketConsumer):
     def send(self, *arg, **kwargs):
         super().send(*arg, **kwargs)
 
+    @database_sync_to_async
+    def dispatch(self, message):
+        handler = getattr(self, get_handler_name(message), None)
+        try:
+            handler(message, consumer=self)
+        except TypeError:
+            handler(message)
+
     def receive_json(self, content, **kwargs):
         if self.broadcast_group:
             action, error = self.check_signature(lambda: Action(**content, system=self.get_systems()))
@@ -158,13 +173,10 @@ class SimpleConsumer(JsonWebsocketConsumer):
                 return
             if action:
                 action_handler = getattr(self, get_handler_name(action.to_system_data()), None)
+                if action_handler:
+                    action_handler.consumer = self
                 if not action_handler:
-                    action = Action(
-                        event=ActionsEnum.error,
-                        payload=ResponsePayload.ActionNotExist().to_data(),
-                        system=self.get_systems()
-                    )
-                    self.send_json(content=action.to_data())
+                    self.Error(payload=ResponsePayload.ActionNotExist(), consumer=self)
                     return
                 async_to_sync(self.channel_layer.group_send)(self.broadcast_group, action.to_system_data())
 
@@ -181,21 +193,11 @@ class SimpleConsumer(JsonWebsocketConsumer):
         except TypeError as e:
             if ' missing ' in str(e):
                 required = str(e).split('argument: ')[1].strip().replace("'", '')
-                action = Action(
-                    event=ActionsEnum.error,
-                    payload=ResponsePayload.PayloadSignatureWrong(required=required).to_data(),
-                    system=self.get_systems()
-                )
-                self.send_json(content=action.to_data())
+                self.Error(payload=ResponsePayload.PayloadSignatureWrong(required=required), consumer=self)
                 error = True
             if ' unexpected ' in str(e):
                 unexpected = str(e).split('argument')[1].strip().replace("'", '')
-                action = Action(
-                    event=ActionsEnum.error,
-                    payload=ResponsePayload.ActionSignatureWrong(unexpected=unexpected).to_data(),
-                    system=self.get_systems()
-                )
-                self.send_json(content=action.to_data())
+                self.Error(payload=ResponsePayload.ActionSignatureWrong(unexpected=unexpected), consumer=self)
                 error = True
         return data, error
 
@@ -233,19 +235,12 @@ class SimpleConsumer(JsonWebsocketConsumer):
             system_before_send()
 
         if (message.target == TargetsEnum.for_user and not message.target_user) and message.is_initiator:
-            action = Action(
-                event=ActionsEnum.error,
-                payload=ResponsePayload.RecipientNotExist().to_data(),
-                system=ActionSystem(**message.system.to_data())
-            )
-            self.send_json(content=action.to_data())
+            self.Error(payload=ResponsePayload.RecipientNotExist(), consumer=self)
             return  # Interrupt action for initiator and action for target if recipient not found
 
         def before():
             if before_send and not message.before_send_activated:
-                act: Action = before_send(message, payload)
-                if act:
-                    self.send_json(content=act.to_data())
+                before_send(message, payload)
                 message.before_send_activate()
                 return True
             return False
@@ -266,17 +261,13 @@ class SimpleConsumer(JsonWebsocketConsumer):
             if message.before_send_activated and not activated:
                 message.before_send_drop()
 
-    def inject_consumer_to_events(self):
+    def hide_events(self):
         attributes = list(filter(lambda attr: not attr.startswith('_') and not attr.startswith('__'), dir(self)))
         classes = list(filter(lambda cls: hasattr(getattr(self, cls), '__base__'), attributes))
         events = list(filter(lambda e: issubclass(getattr(self, e), SimpleEvent), classes))
         for event in events:
             event_class = getattr(self, event)
-            hidden = False
-            if hasattr(event_class, 'hidden'):
-                if event_class.hidden:
-                    hidden = True
-            event_class.consumer = self
+            hidden = getattr(event_class, 'hidden', False)
             if not hidden:
                 setattr(self, camel_to_snake(event), event_class)
 
@@ -285,8 +276,4 @@ class SimpleConsumer(JsonWebsocketConsumer):
         request_payload_type = ResponsePayload.Error
 
         def action_for_initiator(self, message: Message, payload: request_payload_type):
-            return Action(
-                event=ActionsEnum.error,
-                payload=ResponsePayload.Error(message=payload.message).to_data(),
-                system=self.event['system']
-            )
+            return self(payload=ResponsePayload.Error(message=payload.message))
