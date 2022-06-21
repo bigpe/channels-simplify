@@ -19,7 +19,7 @@ from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.urls import re_path
 
-from simple_consumer import SimpleConsumer, TestConsumer
+from src.simple_consumer import TestConsumer
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),
