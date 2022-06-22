@@ -6,7 +6,6 @@ Simple websocket consumer
 
 from __future__ import annotations
 import uuid
-from dataclasses import dataclass
 from inspect import isclass
 from typing import Callable as Cl, Any
 
