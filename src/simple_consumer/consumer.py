@@ -3,10 +3,12 @@ Websocket: Simple Consumer
 ====================================
 Simple websocket consumer
 """
+
 from __future__ import annotations
 import uuid
+from dataclasses import dataclass
 from inspect import isclass
-from typing import Callable, Any
+from typing import Callable as Cl, Any
 
 from asgiref.sync import async_to_sync
 from channels.consumer import get_handler_name
@@ -18,93 +20,100 @@ from django.contrib.auth.models import AbstractUser
 from django.core.cache import cache
 
 from .decoratos import auth, safe
-from .signatures import ResponsePayload, BasePayload, Action, TargetsEnum, Message, ActionSystem, \
-    MessageSystem, TargetResolver
+from .signatures import ResponsePayload, Payload, Event, TargetsEnum, Message, EventSystem, \
+    MessageSystem, TargetResolver, LookupUser
 from .utils import camel_to_snake, user_cache_key, camel_to_dot
 
 User: AbstractUser = get_user_model()
 
 
 class SimpleEvent:
-    request_payload_type = BasePayload  #: Payload type for request this event from client side
-    response_payload_type = BasePayload  #: Payload type for both (who send/and who must receive)
-    response_payload_type_initiator = BasePayload  #: Payload type for users who send this event from client side
-    response_payload_type_target = BasePayload  #: Payload type for users who access to receive this event
-    target = TargetsEnum.for_all  #: Who must receive this event
+    request_payload_type = Payload  #: Payload type for request this name from client side
+    response_payload_type = Payload  #: Payload type for both (who send/and who must receive)
+    response_payload_type_initiator = Payload  #: Payload type for users who send this name from client side
+    response_payload_type_target = Payload  #: Payload type for users who access to receive this name
+    target = TargetsEnum.for_all  #: Who must receive this name
     consumer = None  #: Consumer object instance
     hidden = False  #: If hidden, event can't be called from client side
-    previous_event_instance = None
 
-    def __init__(self, consumer: SimpleConsumer, event=None, payload: BasePayload = None):
+    def before_catch(self, message: Message, payload: request_payload_type):
+        """
+        Do something once before wrap to initiator or targets user catch blocks
+        Use if you need mutate DB or any different data
+        """
+        ...
+
+    def initiator_catch(self, message: Message, payload: request_payload_type):
+        """
+        Catch this block if fired event's initiator is being found
+        You can do any staff at this place, also you can return new event, it will be fired to initiator
+        """
+        ...
+
+    def target_catch(self, message: Message, payload: request_payload_type):
+        """
+        Catch this block if fired event's target is being found
+        You can do any staff at this place, also you can return new event, it will be fired to target
+        """
+        ...
+
+    def after_catch(self, message: Message, payload: request_payload_type):
+        """
+        Do something once after wrap to initiator or targets user catch blocks
+        Use if you need mutate DB or any different data
+        """
+
+    def __init__(self, consumer: SimpleConsumer, content=None, payload: Payload = None):
         self.consumer: SimpleConsumer = consumer if consumer else self.consumer
         if not self.consumer:
             print('Provide consumer instance for direct call event')
             return
 
-        payload = payload if payload else BasePayload()
+        payload = payload if payload else Payload()
         self.payload = payload
-        self.event = self.parse_event(event=event, payload=payload)
+        self.content = self.parse_content(content=content, payload=payload)
 
-        # If event marked as Hidden, send action not exist
+        # If name marked as Hidden, send action not exist
         if self.hidden:
             self.consumer.Error(payload=ResponsePayload.ActionNotExist(), consumer=self.consumer).fire()
             return
 
-    def return_action(self, payload: [BasePayload, dict] = None) -> Action:
+    def return_event(self, payload: [Payload, dict] = None) -> Event:
         payload = payload if payload else self.payload
-        event = self.event
-        return Action(event=event.pop('type'), system=event.pop('system'), payload=payload)
+        content = self.content
+        return Event(name=content.pop('type'), system=content.pop('system'), payload=payload)
 
-    def fire_broadcast(self):
+    def fire_client(self):
         self.consumer.send_broadcast(
-            self.event,
-            action_for_target=self.action_for_target,
-            action_for_initiator=self.action_for_initiator,
+            self.content,
+            do_for_target=self.target_catch,
+            do_for_initiator=self.initiator_catch,
             target=self.target,
-            before_send=self.before_send,
+            do_before=self.before_catch,
             payload_type=self.request_payload_type
         )
 
-    def fire(self, payload: [BasePayload, dict] = None):
-        if payload:
-            self.event = self.parse_event(payload=payload, event={})
-        self.consumer.send_json(self.event)
+    def fire(self, payload: [Payload, dict] = None):
+        self.consumer.send_json(self.return_event(payload).serialize())
 
-    def parse_event(self, event: dict, payload: BasePayload):
+    def fire_broadcast(self, payload: [Payload, dict] = None):
+        event: Event = self.return_event(payload=payload)
+        self.consumer.send_to_group(event)
+
+    def parse_content(self, content: dict, payload: [Payload, dict]):
         event_name = camel_to_dot(self.__class__.__name__)
 
-        # If event data not provided, it means event instance was called directly, you can provide payload
+        # If name data not provided, it means name instance was called directly, you can provide payload
         # and consumer instance to imitate client side communicate,
-        # event type (name) and system data obtained automatically
-        if not event:
+        # name type (name) and system data obtained automatically
+        if not content:
             self.hidden = False
-            event = {
+            content = {
                 'type': event_name,
-                'payload': payload.to_data() if isinstance(payload, BasePayload) else payload,
-                'system': self.consumer.get_systems().to_data()
+                'payload': payload.serialize() if isinstance(payload, Payload) else payload,
+                'system': self.consumer.get_systems().serialize()
             }
-        return event
-
-    def before_send(self, message: Message, payload: request_payload_type):
-        """
-        Do something once before event well be sent to initiator or target users
-        Use if you need mutate DB data before users receive event
-        """
-        ...
-
-    def action_for_initiator(self, message: Message, payload: request_payload_type) -> [Action, None]:
-        """
-        Do something for user who send this event from client side
-        Returned Action well be fired and sent
-        """
-        ...
-
-    def action_for_target(self, message: Message, payload: request_payload_type) -> [Action, None]:
-        """
-        Do something for user who access to receive this event
-        Returned Action well be fired and sent
-        """
-        ...
+        return content
 
 
 class SimpleConsumer(JsonWebsocketConsumer):
@@ -117,11 +126,13 @@ class SimpleConsumer(JsonWebsocketConsumer):
         self.hide_events()
 
     def __call__(self, scope, receive, send):
+        self.inject_user(scope)
+        return super(SimpleConsumer, self).__call__(scope, receive, send)
+
+    @staticmethod
+    def inject_user(scope):
         if not scope.get('user', False):
             scope['user'] = AnonymousUser()
-
-        data = super(SimpleConsumer, self).__call__(scope, receive, send)
-        return data
 
     @auth
     def connect(self):
@@ -145,7 +156,7 @@ class SimpleConsumer(JsonWebsocketConsumer):
 
     def cache_system(self):
         if not self.get_user().is_anonymous:
-            cache.set(user_cache_key(self.get_user()), self.get_systems().to_data(), 40 * 60)
+            cache.set(user_cache_key(self.get_user()), self.get_systems().serialize(), 40 * 60)
 
     def get_user(self, user_id: int = None) -> User:
         return User.objects.get(id=user_id) if user_id else self.scope.get('user', AnonymousUser())
@@ -158,10 +169,8 @@ class SimpleConsumer(JsonWebsocketConsumer):
         if group_name:
             async_to_sync(self.channel_layer.group_discard)(group_name, self.channel_name)
 
-    def get_systems(self) -> ActionSystem:
-        if not self.channel_layer:
-            return ActionSystem(action_id=str(uuid.uuid4()))
-        return ActionSystem(
+    def get_systems(self) -> EventSystem:
+        return EventSystem(
             initiator_channel=self.channel_name,
             initiator_user_id=self.scope['user'].id,
             action_id=str(uuid.uuid4())
@@ -176,41 +185,42 @@ class SimpleConsumer(JsonWebsocketConsumer):
         super().send(*arg, **kwargs)
 
     @database_sync_to_async
-    def dispatch(self, message):
-        handler: Callable = getattr(self, get_handler_name(message), None)
+    def dispatch(self, content):
+        handler: Cl = getattr(self, get_handler_name(content), None)
         if isclass(handler):
             handler: Any
             if issubclass(handler, SimpleEvent):
-                handler(consumer=self, event=message).fire_broadcast()
+                handler(consumer=self, content=content).fire_client()
         else:
-            handler(message)
+            handler(content)
 
-    def receive_json(self, content, **kwargs):
+    def receive_json(self, content: dict, **kwargs):
         if not self.channel_layer:
             self.Error(payload=ResponsePayload.ChannelLayerDisabled(), consumer=self).fire()
             return
-        action, error = self.check_signature(lambda: Action(**content, system=self.get_systems()))
-        action: Action
+        content.update({'name': content.pop('event')})
+        event, error = self.check_signature(lambda: Event(**content, system=self.get_systems()))
+        event: Event
         if error:
             return
-        if action:
-            action_handler = getattr(self, get_handler_name(action.to_system_data()), None)
+        if event:
+            action_handler = getattr(self, get_handler_name(event.to_channels()), None)
             if action_handler:
                 action_handler.consumer = self
             if not action_handler:
                 self.Error(payload=ResponsePayload.ActionNotExist(), consumer=self).fire()
                 return
         if self.broadcast_group:
-            async_to_sync(self.channel_layer.group_send)(self.broadcast_group, action.to_system_data())
+            self.send_to_group(event)
         else:
             print(f'Broadcast group not specified for {self.__class__.__name__}, broadcast not sent')
 
-    def send_to_group(self, action: Action, group_name: str = None):
+    def send_to_group(self, event: Event, group_name: str = None):
         async_to_sync(
             self.channel_layer.group_send
-        )(self.broadcast_group if not group_name else group_name, action.to_system_data())
+        )(self.broadcast_group if not group_name else group_name, event.to_channels())
 
-    def check_signature(self, f: Callable):
+    def check_signature(self, f: Cl):
         error = False
         data = None
         try:
@@ -226,66 +236,64 @@ class SimpleConsumer(JsonWebsocketConsumer):
                 error = True
         return data, error
 
-    def parse_payload(self, event, payload_type: BasePayload()):
-        payload = BasePayload(**event['payload'])
+    def parse_payload(self, content, payload_type: Payload()):
+        payload = Payload(**content['payload'])
         error = False
         if payload_type:
-            payload, error = self.check_signature(lambda: payload_type(**payload.to_data()))
+            payload, error = self.check_signature(lambda: payload_type(**payload.serialize()))
         return payload, error
 
-    @safe
-    def send_broadcast(self, event, action_for_target: Callable = None, action_for_initiator: Callable = None,
-                       target=TargetsEnum.for_all, before_send: Callable = None,
-                       system_before_send: Callable = None, payload_type: BasePayload() = None):
-
-        payload, error = self.parse_payload(event, payload_type)
-        if error:
-            return
-
+    def parse_message(self, target: TargetsEnum, payload: Payload, content: dict):
         # TODO kwargs lookup for to_user_id/to_username
         TargetResolver.update(self.custom_target_resolver)
         message = Message(
-            to_user_id=payload.to_data().pop('to_user_id', None),
-            to_username=payload.to_data().pop('to_username', None),
             payload=payload,
             system=MessageSystem(
-                **ActionSystem(**event['system']).to_data(),
+                **EventSystem(**content['system']).serialize(),
                 receiver_channel=self.channel_name
             ),
             user=self.scope['user'],
             target=target,
-            target_resolver=TargetResolver
+            target_resolver=TargetResolver,
+            lookup=LookupUser(**{f'to_{field}': getattr(payload, f'to_{field}', None) for field in LookupUser.Fields})
         )
+        return message
 
-        if system_before_send:
-            system_before_send()
+    @safe
+    def send_broadcast(self, content, target, do_for_target: Cl = None, do_for_initiator: Cl = None,
+                       do_before: Cl = None, payload_type=None):
+
+        payload, error = self.parse_payload(content, payload_type)
+        payload: Payload
+        if error:
+            return
+
+        message = self.parse_message(target, payload, content)
 
         if (message.target == TargetsEnum.for_user and not message.target_user) and message.is_initiator:
             self.Error(payload=ResponsePayload.RecipientNotExist(), consumer=self).fire()
             return  # Interrupt action for initiator and action for target if recipient not found
 
         def before():
-            if before_send and not message.before_send_activated:
-                before_send(message, payload)
-                message.before_send_activate()
+            if do_before and not message.before_activated:
+                do_before(message, payload)
+                message.before_activate()
                 return True
             return False
 
-        if message.is_initiator and action_for_initiator:
+        def do_for(do: Cl):
             activated = before()
-            action: Action = action_for_initiator(message, payload)
-            if action:
-                self.send_json(content=action.to_data())
-            if message.before_send_activated and not activated:
-                message.before_send_drop()
+            event: [Event, dict] = do()
+            if event:
+                self.send_json(content=event.serialize() if isinstance(event, Event) else event)
+            if message.before_activated and not activated:
+                message.before_drop()
 
-        if message.is_target and action_for_target:
-            activated = before()
-            action: Action = action_for_target(message, payload)
-            if action:
-                self.send_json(content=action.to_data())
-            if message.before_send_activated and not activated:
-                message.before_send_drop()
+        if message.is_initiator and do_for_initiator:
+            do_for(lambda: do_for_initiator(message, payload))
+
+        if message.is_target and do_for_target:
+            do_for(lambda: do_for_target(message, payload))
 
     def hide_events(self):
         attributes = list(filter(lambda attr: not attr.startswith('_') and not attr.startswith('__'), dir(self)))
@@ -298,36 +306,6 @@ class SimpleConsumer(JsonWebsocketConsumer):
                 setattr(self, camel_to_snake(event), event_class)
 
     class Error(SimpleEvent):
-        """Show error message"""
-        request_payload_type = ResponsePayload.Error
-
-        def action_for_initiator(self, message: Message, payload: request_payload_type) -> [Action, None]:
-            return self.return_action(payload=ResponsePayload.Error(message=payload.message))
-
-
-class TestConsumer(SimpleConsumer):
-    authed = False
-    broadcast_group = 'test_consumer'
-
-    class TestEvent(SimpleEvent):
+        """Error event"""
         request_payload_type = None
-
-        def action_for_initiator(self, message: Message, payload: request_payload_type) -> [Action, None]:
-            self.fire()
-
-        def action_for_target(self, message: Message, payload: request_payload_type) -> [Action, None]:
-            self.fire()
-
-
-class TestConsumer1(SimpleConsumer):
-    authed = False
-    broadcast_group = 'test_consumer1'
-
-    class TestEvent1(SimpleEvent):
-        request_payload_type = None
-
-        def action_for_initiator(self, message: Message, payload: request_payload_type) -> [Action, None]:
-            self.fire()
-
-        def action_for_target(self, message: Message, payload: request_payload_type) -> [Action, None]:
-            self.fire()
+        hidden = True

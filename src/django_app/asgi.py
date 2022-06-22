@@ -17,13 +17,14 @@ django.setup()
 
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
-from django.urls import re_path
+from django.urls import path
+from django_app.middleware import AuthMiddlewareFromPath
 
-from src.simple_consumer import TestConsumer
+from src.test_consumer import TestConsumer
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),
-    "websocket": URLRouter([
-        re_path(r'^ws/', TestConsumer.as_asgi()),
-    ]),
+    "websocket": AuthMiddlewareFromPath(URLRouter([
+        path(r'ws/<int:user_id>/', TestConsumer.as_asgi()),
+    ])),
 })

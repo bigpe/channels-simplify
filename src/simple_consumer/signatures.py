@@ -1,77 +1,78 @@
 import dataclasses
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Union
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
 User = get_user_model()
 
 
-class BasePayload:
+class Payload:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
     def __str__(self):
-        return json.dumps(self.to_data())
+        return self.serialize()
 
-    def to_data(self, *args):
-        if args:
-            return self.__dict__
+    def serialize(self):
         return self.__dict__
-
-    def __repr__(self):
-        return self.to_data()
 
 
 class ResponsePayload:
     """List of response payload signatures"""
 
     @dataclass
-    class ChannelLayerDisabled(BasePayload):
-        #: Error message
+    class ChannelLayerDisabled(Payload):
+        #: Error content
         message: str = 'Channel layer disabled, modify your settings, is requirement for broadcast correct work ' \
                        'see more about it https://channels.readthedocs.io/en/stable/topics/channel_layers.html'
 
     @dataclass
-    class ActionNotExist(BasePayload):
-        message: str = 'Action not exist'  #: Error message
+    class ActionNotExist(Payload):
+        message: str = 'Event not exist'  #: Error content
 
     @dataclass
-    class PayloadSignatureWrong(BasePayload):
+    class PayloadSignatureWrong(Payload):
         required: str  #: Hint about missing signature
-        message: str = 'Payload signature wrong'  #: Error message
+        message: str = 'Payload signature wrong'  #: Error content
 
     @dataclass
-    class ActionSignatureWrong(BasePayload):
+    class ActionSignatureWrong(Payload):
         unexpected: str  #: Hint about unexpected signature
-        message: str = 'Action signature wrong'  #: Error message
+        message: str = 'Event signature wrong'  #: Error content
 
     @dataclass
-    class RecipientNotExist(BasePayload):
-        message: str = 'Recipient not exist'  #: Error message
+    class RecipientNotExist(Payload):
+        message: str = 'Recipient not exist'  #: Error content
 
     @dataclass
-    class RecipientIsMe(BasePayload):
-        message: str = 'You cannot be the recipient'  #: Error message
+    class RecipientIsMe(Payload):
+        message: str = 'You cannot be the recipient'  #: Error content
 
     @dataclass
-    class Error(BasePayload):
-        message: str  #: Error message
+    class SomethingWrong(Payload):
+        error_text: str  #: Text of error
+        error_hash: str  #: Hash of error
+        message: str = 'Something wrong'  #: Error content
+
+    @dataclass
+    class Error(Payload):
+        message: str  #: Error content
 
 
-class ActionsEnum:
-    """List of existed actions"""
+class EventsEnum:
+    """List of existed events"""
     error = 'error'  #: :func:`SimpleConsumer.error`
 
 
 @dataclass
-class ActionSystem:
-    initiator_channel: str = None  #: Action initiator channel name
-    initiator_user_id: int = None  #: Action initiator user id
+class EventSystem:
+    initiator_channel: str = None  #: Event initiator channel name
+    initiator_user_id: int = None  #: Event initiator user id
     action_id: str = None
 
-    def to_data(self):
+    def serialize(self):
         return {
             'initiator_channel': self.initiator_channel,
             'initiator_user_id': self.initiator_user_id,
@@ -79,53 +80,61 @@ class ActionSystem:
         }
 
 
+class BaseEvent:
+    @staticmethod
+    def serialize_payload(payload: [dict, Payload]) -> dict:
+        return payload.serialize() if isinstance(payload, Payload) else payload
+
+    @staticmethod
+    def serialize_system(system: [dict, EventSystem]) -> dict:
+        return system.serialize() if isinstance(system, EventSystem) else system
+
+
 @dataclass
-class Action:
-    """Action signature for request and response"""
-    event: str  #: Action's name
-    system: ActionSystem  #: System event information
-    payload: Any = dataclasses.field(default_factory=dict)  #: Action's payload
+class Event(BaseEvent):
+    """Event signature for request and response"""
+    name: str  #: Event's name
+    system: Union[EventSystem, dict]  #: System name information
+    payload: Union[Payload, dict] = dataclasses.field(default_factory=dict)  #: Event's payload
 
     def __str__(self, to_json=True):
-        data = ActionData(
-            type=self.event,
-            payload=self.payload.to_data() if isinstance(self.payload, BasePayload) else self.payload,
-            system=self.system
-        ).to_data()
-        if to_json:
-            return json.dumps(data)
+        return self.serialize(to_json=True)
+
+    def serialize(self, to_json=False, to_channels=False, pop_system=False):
+        if to_channels:
+            data = EventChannels(
+                type=self.name,
+                payload=self.serialize_payload(self.payload),
+                system=self.serialize_system(self.system)
+            ).serialize()
+        else:
+            data = {
+                'event': self.name,
+                'payload': self.serialize_payload(self.payload),
+                'system': self.serialize_system(self.system)
+            }
+        data.pop('system') if pop_system else ...
+        data = json.dumps(data, default=lambda o: o.__dict__) if to_json else data
         return data
 
-    def to_system_data(self):
-        return self.__str__(to_json=False)
-
-    def to_data(self, to_json=False, pop_system=False):
-        data = {
-            'event': self.event,
-            'payload': self.payload.to_data() if isinstance(self.payload, BasePayload) else self.payload,
-            'system': self.system.to_data() if isinstance(self.system, ActionSystem) else self.system
-        }
-        if pop_system:
-            data.pop('system')
-        if to_json:
-            data = json.dumps(data, default=lambda o: o.__dict__)
-        return data
+    def to_channels(self):
+        return self.serialize(to_channels=True)
 
     def to_json(self):
-        return self.to_data(to_json=True)
+        return self.serialize(to_json=True)
 
 
 @dataclass
-class ActionData:
+class EventChannels(BaseEvent):
     type: str  #: Handler's name
-    payload: Any  #: Handler's payload
-    system: ActionSystem  #: System handler information
+    payload: Union[Payload, dict]  #: Handler's payload
+    system: Union[EventSystem, dict]  #: System handler information
 
-    def to_data(self):
+    def serialize(self):
         return {
             'type': self.type,
-            'payload': self.payload,
-            'system': self.system.to_data() if isinstance(self.system, ActionSystem) else self.system
+            'payload': self.serialize_payload(self.payload),
+            'system': self.serialize_system(self.system)
         }
 
 
@@ -134,9 +143,9 @@ class MessageSystem:
     initiator_channel: str  #: Initiator channel name
     receiver_channel: str  #: Receiver channel name
     initiator_user_id: int  #: Initiator user id
-    action_id: str  #: Action id
+    action_id: str  #: Event id
 
-    def to_data(self):
+    def serialize(self):
         return {
             'initiator_channel': self.initiator_channel,
             'initiator_user_id': self.initiator_user_id,
@@ -151,17 +160,29 @@ class TargetsEnum:
     for_initiator = 'for_initiator'  #: For initiator user only
 
 
-class Message:
-    user: User  #: User who receive message
-    system: MessageSystem  #: System message information
-    target: TargetsEnum  #: Target for broadcast
-    to_user_id: int = None  #: Message target user id
+class LookupUser:
+    Fields = ['id', 'username']
+
+    to_id: int = None  #: Message target user id
     to_username: str = None  #: Message target user username
-    target_resolver: dict  #: Target resolver
-    payload: BasePayload  #: Payload
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+    def serialize(self):
+        lookup = {field: getattr(self, f'to_{field}', None) for field in self.Fields}
+        lookup = dict(filter(lambda field: field[1], lookup.items()))
+        return lookup
+
+
+@dataclass
+class Message:
+    user: User  #: User who receive content
+    system: MessageSystem  #: System content information
+    target: TargetsEnum  #: Target for broadcast
+    lookup: LookupUser  #: Lookup user fields
+    target_resolver: dict  #: Target resolver
+    payload: Payload  #: Payload
 
     @property
     def is_target(self):
@@ -173,26 +194,37 @@ class Message:
 
     @property
     def initiator_user(self) -> User:
-        return User.objects.get(id=self.system.initiator_user_id)
+        return User.objects.filter(id=self.system.initiator_user_id).first()
 
     @property
     def target_user(self) -> User:
-        # TODO kwargs lookup for to_user_id/to_username
-        if self.to_user_id:
-            return User.objects.filter(id=self.to_user_id).first()
-        if self.to_username:
-            return User.objects.filter(username=self.to_username).first()
+        return User.objects.filter(**self.lookup.serialize()).first()
+
+    @staticmethod
+    def cache_set(key, value, ttl):
+        cache.set(key, value, ttl)
+
+    @staticmethod
+    def cache_get(key):
+        return cache.get(key)
+
+    @staticmethod
+    def cache_delete(key):
+        cache.delete(key)
 
     @property
-    def before_send_activated(self):
-        result = cache.get(f'{self.system.action_id, self.system.initiator_channel}')
-        return result
+    def before_key(self):
+        return f'consumer-before-{self.system.action_id, self.system.initiator_channel}'
 
-    def before_send_activate(self):
-        cache.set(f'{self.system.action_id, self.system.initiator_channel}', True, 180)
+    @property
+    def before_activated(self):
+        return self.cache_get(self.before_key)
 
-    def before_send_drop(self):
-        cache.delete(f'{self.system.action_id, self.system.initiator_channel}')
+    def before_activate(self):
+        self.cache_set(self.before_key, True, 180)
+
+    def before_drop(self):
+        self.cache_delete(self.before_key)
 
 
 def for_initiator(message: Message):
@@ -205,8 +237,8 @@ def for_all(message: Message):
 
 def for_user(message: Message):
     if message.target == TargetsEnum.for_user:
-        # TODO kwargs lookup
-        return message.user.id == message.to_user_id or message.user.username == message.to_username
+        lookup_user = User.objects.filter(**message.lookup.serialize()).first()
+        return message.user == lookup_user
     return False
 
 
