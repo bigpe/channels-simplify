@@ -173,7 +173,7 @@ class SimpleConsumer(JsonWebsocketConsumer):
         return EventSystem(
             initiator_channel=self.channel_name,
             initiator_user_id=self.scope['user'].id,
-            action_id=str(uuid.uuid4())
+            event_id=str(uuid.uuid4())
         )
 
     @safe
