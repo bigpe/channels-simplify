@@ -70,13 +70,13 @@ class EventsEnum:
 class EventSystem:
     initiator_channel: str = None  #: Event initiator channel name
     initiator_user_id: int = None  #: Event initiator user id
-    action_id: str = None
+    event_id: str = None
 
     def serialize(self):
         return {
             'initiator_channel': self.initiator_channel,
             'initiator_user_id': self.initiator_user_id,
-            'action_id': self.action_id,
+            'event_id': self.event_id,
         }
 
 
@@ -143,13 +143,13 @@ class MessageSystem:
     initiator_channel: str  #: Initiator channel name
     receiver_channel: str  #: Receiver channel name
     initiator_user_id: int  #: Initiator user id
-    action_id: str  #: Event id
+    event_id: str  #: Event id
 
     def serialize(self):
         return {
             'initiator_channel': self.initiator_channel,
             'initiator_user_id': self.initiator_user_id,
-            'action_id': self.action_id,
+            'event_id': self.event_id,
         }
 
 
@@ -214,7 +214,7 @@ class Message:
 
     @property
     def before_key(self):
-        return f'consumer-before-{self.system.action_id, self.system.initiator_channel}'
+        return f'consumer-before-{self.system.event_id, self.system.initiator_channel}'
 
     @property
     def before_activated(self):
