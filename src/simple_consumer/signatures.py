@@ -24,41 +24,41 @@ class ResponsePayload:
 
     @dataclass
     class ChannelLayerDisabled(Payload):
-        #: Error content
+        #: Error message
         message: str = 'Channel layer disabled, modify your settings, is requirement for broadcast correct work ' \
                        'see more about it https://channels.readthedocs.io/en/stable/topics/channel_layers.html'
 
     @dataclass
     class ActionNotExist(Payload):
-        message: str = 'Event not exist'  #: Error content
+        message: str = 'Event not exist'  #: Error message
 
     @dataclass
     class PayloadSignatureWrong(Payload):
         required: str  #: Hint about missing signature
-        message: str = 'Payload signature wrong'  #: Error content
+        message: str = 'Payload signature wrong'  #: Error message
 
     @dataclass
     class ActionSignatureWrong(Payload):
         unexpected: str  #: Hint about unexpected signature
-        message: str = 'Event signature wrong'  #: Error content
+        message: str = 'Event signature wrong'  #: Error message
 
     @dataclass
     class RecipientNotExist(Payload):
-        message: str = 'Recipient not exist'  #: Error content
+        message: str = 'Recipient not exist'  #: Error message
 
     @dataclass
     class RecipientIsMe(Payload):
-        message: str = 'You cannot be the recipient'  #: Error content
+        message: str = 'You cannot be the recipient'  #: Error message
 
     @dataclass
     class SomethingWrong(Payload):
         error_text: str  #: Text of error
         error_hash: str  #: Hash of error
-        message: str = 'Something wrong'  #: Error content
+        message: str = 'Something wrong'  #: Error message
 
     @dataclass
     class Error(Payload):
-        message: str  #: Error content
+        message: str  #: Error message
 
 
 class EventsEnum:

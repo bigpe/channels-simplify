@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from simple_consumer import SimpleConsumer, SimpleEvent, TargetsEnum, Message, Payload
+from simple_consumer import SimpleConsumer, SimpleEvent, TargetsEnum, Message, Payload, check_recipient_not_me
 
 
 class TestConsumer(SimpleConsumer):
@@ -75,6 +75,7 @@ class TestConsumer(SimpleConsumer):
                 'Thanks for send signal': f'Cool, message to user - {payload.to_username} successfully sent'}
             )
 
+        @check_recipient_not_me
         def target_catch(self, message: Message, payload: request_payload_type):
             """
             Client send test.event.for.specific.user signal, and specific user receive same signal

@@ -28,9 +28,11 @@ def auth(f):
 
 def check_recipient_not_me(f):
     @wraps(f)
-    def wrapper(message: Message, payload: Payload, *args, **kwargs):
+    def wrapper(self, message: Message, payload: Payload, *args, **kwargs):
+        from .consumer import SimpleEvent
+        self: SimpleEvent
         if message.target_user != message.initiator_user:
-            return f(message, payload, *args, **kwargs)
+            return f(self, message, payload, *args, **kwargs)
         else:
             action = Event(
                 name=EventsEnum.error,
