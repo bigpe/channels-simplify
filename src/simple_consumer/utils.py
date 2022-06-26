@@ -34,7 +34,7 @@ def snake_to_camel(name):
 
 
 def user_cache_key(user: User):
-    return f'user-{user.id}'
+    return f'channels-simplify-user-{user.id}'
 
 
 def get_system_cache(user: User):

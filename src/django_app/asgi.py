@@ -20,7 +20,7 @@ from channels.routing import ProtocolTypeRouter, URLRouter
 from django.urls import path
 from django_app.middleware import AuthMiddlewareFromPath
 
-from src.test_consumer import TestConsumer
+from test_consumer import TestConsumer
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),

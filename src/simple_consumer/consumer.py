@@ -13,6 +13,7 @@ from asgiref.sync import async_to_sync
 from channels.consumer import get_handler_name
 from channels.db import database_sync_to_async
 from channels.generic.websocket import JsonWebsocketConsumer
+from channels.layers import get_channel_layer
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AbstractUser
@@ -21,7 +22,7 @@ from django.core.cache import cache
 from .decoratos import auth, safe
 from .signatures import ResponsePayload, Payload, Event, TargetsEnum, Message, EventSystem, \
     MessageSystem, TargetResolver, LookupUser
-from .utils import camel_to_snake, user_cache_key, camel_to_dot
+from .utils import camel_to_snake, user_cache_key, camel_to_dot, get_system_cache
 
 User: AbstractUser = get_user_model()
 
@@ -95,8 +96,15 @@ class SimpleEvent:
     def fire(self, payload: [Payload, dict] = None):
         self.consumer.send_json(self.return_event(payload).serialize())
 
-    def fire_broadcast(self, payload: [Payload, dict] = None):
+    def fire_broadcast(self=None, payload: [Payload, dict] = None, user: User = None):
+        if user:
+            scope = getattr(self.consumer, 'scope', {})
+            self.consumer.scope = self.consumer.inject_user(scope, user)
+            system = get_system_cache(user)
+            if system:
+                self.content.update({'system': get_system_cache(user)})
         event: Event = self.return_event(payload=payload)
+        print(event)
         self.consumer.send_to_group(event)
 
     def parse_content(self, content: dict, payload: [Payload, dict]):
@@ -119,8 +127,10 @@ class SimpleConsumer(JsonWebsocketConsumer):
     broadcast_group = None  #: Group to join after connect
     authed = False  #: Check connected user is authed, if not - close connect
     custom_target_resolver = {}  #: If you need define rules for lookup users who want to receive events (target)
+    headers = {}  #: Response headers
 
     def __init__(self):
+        self.channel_layer = get_channel_layer()
         super(SimpleConsumer, self).__init__()
         self.hide_events()
 
@@ -128,10 +138,18 @@ class SimpleConsumer(JsonWebsocketConsumer):
         self.inject_user(scope)
         return super(SimpleConsumer, self).__call__(scope, receive, send)
 
+    def accept(self, subprotocol=None):
+        if self.headers and isinstance(self.headers, dict):
+            subprotocol = (None, self.headers)
+        super(SimpleConsumer, self).accept(subprotocol)
+
     @staticmethod
-    def inject_user(scope):
+    def inject_user(scope, user: User = None):
+        if user:
+            scope['user'] = user
         if not scope.get('user', False):
             scope['user'] = AnonymousUser()
+        return scope
 
     @auth
     def connect(self):
@@ -155,23 +173,27 @@ class SimpleConsumer(JsonWebsocketConsumer):
 
     def cache_system(self):
         if not self.get_user().is_anonymous:
-            cache.set(user_cache_key(self.get_user()), self.get_systems().serialize(), 40 * 60)
+            systems = self.get_systems().serialize()
+            systems.pop('event_id')
+            cache.set(user_cache_key(self.get_user()), systems, 40 * 60)
 
     def get_user(self, user_id: int = None) -> User:
         return User.objects.get(id=user_id) if user_id else self.scope.get('user', AnonymousUser())
 
     def join_group(self, group_name: str):
         if group_name:
+            self.broadcast_group = group_name
             async_to_sync(self.channel_layer.group_add)(group_name, self.channel_name)
 
     def leave_group(self, group_name: str):
         if group_name:
+            self.broadcast_group = None
             async_to_sync(self.channel_layer.group_discard)(group_name, self.channel_name)
 
     def get_systems(self) -> EventSystem:
         return EventSystem(
-            initiator_channel=self.channel_name,
-            initiator_user_id=self.scope['user'].id,
+            initiator_channel=getattr(self, 'channel_name', None),
+            initiator_user_id=getattr(getattr(self, 'scope', {}).get('user', None), 'id', None),
             event_id=str(uuid.uuid4())
         )
 
@@ -243,13 +265,13 @@ class SimpleConsumer(JsonWebsocketConsumer):
         return payload, error
 
     def parse_message(self, target: TargetsEnum, payload: Payload, content: dict):
-        # TODO kwargs lookup for to_user_id/to_username
+        # TODO extend kwargs lookup for child consumer
         TargetResolver.update(self.custom_target_resolver)
         message = Message(
             payload=payload,
             system=MessageSystem(
                 **EventSystem(**content['system']).serialize(),
-                receiver_channel=self.channel_name
+                receiver_channel=getattr(self, 'channel_name', None)
             ),
             user=self.scope['user'],
             target=target,
