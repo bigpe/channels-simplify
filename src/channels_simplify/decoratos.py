@@ -11,7 +11,7 @@ from .signatures import ResponsePayload, EventSystem, EventsEnum, Event, Message
 def auth(f):
     @wraps(f)
     def wrapper(self, *args, **kwargs):
-        from .consumer import SimpleConsumer
+        from .consumers import SimpleConsumer
         self: SimpleConsumer
         user = self.get_user()
         if not self.authed:
@@ -29,7 +29,7 @@ def auth(f):
 def check_recipient_not_me(f):
     @wraps(f)
     def wrapper(self, message: Message, payload: Payload, *args, **kwargs):
-        from .consumer import SimpleEvent
+        from .consumers import SimpleEvent
         self: SimpleEvent
         if message.target_user != message.initiator_user:
             return f(self, message, payload, *args, **kwargs)
@@ -48,7 +48,7 @@ def check_recipient_not_me(f):
 def safe(f: Callable) -> Callable:
     @wraps(f)
     def wrapper(self, *args, **kwargs):
-        from .consumer import SimpleConsumer
+        from .consumers import SimpleConsumer
         self: SimpleConsumer
         try:
             return f(self, *args, **kwargs)

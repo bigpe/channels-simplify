@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from simple_consumer.consumer import SimpleConsumer, SimpleEvent, TargetsEnum, Message, Payload
-from simple_consumer.decoratos import check_recipient_not_me
+from channels_simplify.consumers import SimpleConsumer, SimpleEvent, TargetsEnum, Message, Payload
+from channels_simplify.decoratos import check_recipient_not_me
 
 
 class TestConsumer(SimpleConsumer):
