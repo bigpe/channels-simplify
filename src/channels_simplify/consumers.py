@@ -96,7 +96,7 @@ class SimpleEvent:
     def fire(self, payload: [Payload, dict] = None):
         self.consumer.send_json(self.return_event(payload).serialize())
 
-    def fire_broadcast(self=None, payload: [Payload, dict] = None, user: User = None):
+    def fire_broadcast(self, payload: [Payload, dict] = None, user: User = None):
         if user:
             scope = getattr(self.consumer, 'scope', {})
             self.consumer.scope = self.consumer.inject_user(scope, user)
@@ -104,7 +104,6 @@ class SimpleEvent:
             if system:
                 self.content.update({'system': get_system_cache(user)})
         event: Event = self.return_event(payload=payload)
-        print(event)
         self.consumer.send_to_group(event)
 
     def parse_content(self, content: dict, payload: [Payload, dict]):
@@ -151,8 +150,12 @@ class SimpleConsumer(JsonWebsocketConsumer):
             scope['user'] = AnonymousUser()
         return scope
 
+    def before_connect(self):
+        ...
+
     @auth
     def connect(self):
+        self.before_connect()
         self.cache_system()
         self.join_group(self.broadcast_group)
         self.after_connect()
@@ -213,7 +216,8 @@ class SimpleConsumer(JsonWebsocketConsumer):
             if issubclass(handler, SimpleEvent):
                 handler(consumer=self, content=content).fire_client()
         else:
-            handler(content)
+            if handler:
+                handler(content)
 
     def receive_json(self, content: dict, **kwargs):
         if not self.channel_layer:
@@ -237,9 +241,10 @@ class SimpleConsumer(JsonWebsocketConsumer):
             print(f'Broadcast group not specified for {self.__class__.__name__}, broadcast not sent')
 
     def send_to_group(self, event: Event, group_name: str = None):
-        async_to_sync(
-            self.channel_layer.group_send
-        )(self.broadcast_group if not group_name else group_name, event.to_channels())
+        if group_name or self.broadcast_group:
+            async_to_sync(
+                self.channel_layer.group_send
+            )(self.broadcast_group if not group_name else group_name, event.to_channels())
 
     def check_signature(self, f: Cl):
         error = False
@@ -276,7 +281,8 @@ class SimpleConsumer(JsonWebsocketConsumer):
             user=self.scope['user'],
             target=target,
             target_resolver=TargetResolver,
-            lookup=LookupUser(**{f'to_{field}': getattr(payload, f'to_{field}', None) for field in LookupUser.Fields})
+            lookup=LookupUser(**{f'to_{field}': getattr(payload, f'to_{field}', None) for field in LookupUser.Fields}),
+            consumer=self
         )
         return message
 

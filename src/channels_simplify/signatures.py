@@ -1,7 +1,7 @@
 import dataclasses
 import json
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, Any
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
@@ -183,6 +183,7 @@ class Message:
     lookup: LookupUser  #: Lookup user fields
     target_resolver: dict  #: Target resolver
     payload: Payload  #: Payload
+    consumer: Any  #: Consumer object
 
     @property
     def is_target(self):
