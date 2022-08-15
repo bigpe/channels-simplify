@@ -238,6 +238,8 @@ def for_all(message: Message):
 
 def for_user(message: Message):
     if message.target == TargetsEnum.for_user:
+        if not message.lookup.serialize():
+            return False
         lookup_user = User.objects.filter(**message.lookup.serialize()).first()
         return message.user == lookup_user
     return False
